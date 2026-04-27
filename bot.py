@@ -8,13 +8,13 @@ from telegram.ext import ContextTypes
 from config import TELEGRAM_GROUP_ID
 from database import Database
 from deduplicator import Deduplicator
-from news_client import NewsAPIClient   # ← swap to MyNewsClient if needed
+from news_client import MarketauxClient
 from x_poster import XPoster
 
 logger = logging.getLogger(__name__)
 
 # Instantiated once at module level — shared across all calls
-news_client = NewsAPIClient()
+news_client = MarketauxClient()
 x_poster    = XPoster()
 
 
