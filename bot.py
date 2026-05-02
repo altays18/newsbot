@@ -9,13 +9,13 @@ from config import TELEGRAM_GROUP_ID
 from database import Database
 from deduplicator import Deduplicator
 from news_client import MarketauxClient
-from x_poster import XPoster
+from x_poster import post_article
 
 logger = logging.getLogger(__name__)
 
 # Instantiated once at module level — shared across all calls
 news_client = MarketauxClient()
-x_poster    = XPoster()
+
 
 
 # ── Message formatting ────────────────────────────────────────────────────────
@@ -97,7 +97,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == "post":
         await query.message.reply_text("⏳ Posting to X…")
-        success, result = x_poster.post(article)
+        success, result = await post_article(article)
 
         if success:
             await query.message.reply_text(
