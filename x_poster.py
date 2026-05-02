@@ -44,6 +44,29 @@ async def _load_cookies(context) -> bool:
         return False
 
 
+async def _click_next_button(page) -> bool:
+    """Click whichever Next/Continue button is visible."""
+    selectors = [
+        '[data-testid="ocfEnterTextNextButton"]',
+        '[data-testid="LoginForm_Login_Button"]',
+        'div[role="button"]:has-text("Next")',
+        'div[role="button"]:has-text("Continue")',
+        'span:has-text("Next")',
+    ]
+    for sel in selectors:
+        try:
+            btn = page.locator(sel).first
+            if await btn.count() > 0 and await btn.is_visible():
+                await btn.click()
+                logger.info(f"Clicked button: {sel}")
+                return True
+        except Exception:
+            continue
+    # Fallback — press Enter
+    await page.keyboard.press("Enter")
+    return True
+
+
 async def _login(page) -> bool:
     try:
         logger.info("Navigating to X login...")
@@ -55,51 +78,56 @@ async def _login(page) -> bool:
         username_input = page.locator('input[autocomplete="username"], input[name="text"]').first
         await username_input.wait_for(state="visible", timeout=10000)
         await username_input.fill(X_USERNAME)
-        await page.keyboard.press("Enter")
+        await _click_next_button(page)
         await page.wait_for_timeout(3000)
         logger.info("Username submitted")
 
-        # Step 2 — X sometimes asks for email/phone before password
-        # Check all visible inputs and handle accordingly
-        for attempt in range(3):
+        # Step 2 — loop through whatever screens X shows
+        for attempt in range(4):
             await page.wait_for_timeout(2000)
-            logger.info(f"Checking what's on screen (attempt {attempt+1})...")
+            logger.info(f"Screen check attempt {attempt + 1}, URL: {page.url}")
 
-            # Password field — we're done with pre-steps
+            # Success — we're logged in
+            if "home" in page.url:
+                logger.info("Login successful!")
+                return True
+
+            # Password field
             pwd = page.locator('input[name="password"]')
             if await pwd.count() > 0 and await pwd.is_visible():
-                logger.info("Password field found!")
+                logger.info("Password field found, entering password...")
                 await pwd.fill(X_PASSWORD)
-                await page.keyboard.press("Enter")
+                await _click_next_button(page)
                 await page.wait_for_timeout(5000)
                 logger.info(f"Password submitted, URL: {page.url}")
-                break
+                continue
 
-            # Verification / unusual activity screen
+            # Email/phone verification field
             verify = page.locator('input[data-testid="ocfEnterTextTextInput"]')
             if await verify.count() > 0 and await verify.is_visible():
-                logger.info("Verification input detected, entering email...")
-                await verify.fill(X_EMAIL or X_USERNAME)
-                await page.keyboard.press("Enter")
+                logger.info("Verification field found, entering email...")
+                await verify.fill(X_EMAIL)
+                await _click_next_button(page)
                 await page.wait_for_timeout(3000)
                 continue
 
-            # Generic text input (fallback)
+            # Generic text input (phone/email prompt before password)
             generic = page.locator('input[name="text"]')
             if await generic.count() > 0 and await generic.is_visible():
-                logger.info("Generic text input found, entering email...")
-                await generic.fill(X_EMAIL or X_USERNAME)
-                await page.keyboard.press("Enter")
+                logger.info("Generic text input, entering email...")
+                await generic.fill(X_EMAIL)
+                await _click_next_button(page)
                 await page.wait_for_timeout(3000)
                 continue
 
-            logger.info("No known input found, waiting...")
+            logger.info("No known input found on this screen, waiting...")
 
+        # Final check
         if "home" in page.url:
             logger.info("Login successful!")
             return True
 
-        logger.error(f"Login failed, final URL: {page.url}")
+        logger.error(f"Login failed after all attempts, URL: {page.url}")
         return False
 
     except Exception as e:
