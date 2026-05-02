@@ -3,6 +3,8 @@ import json
 from datetime import datetime, timedelta
 from config import DB_PATH, DEDUP_WINDOW_HOURS
 
+PENDING_RETENTION_DAYS = 7   # Keep pending articles for 7 days
+
 
 class Database:
     def __init__(self):
@@ -27,14 +29,20 @@ class Database:
                     id           INTEGER PRIMARY KEY AUTOINCREMENT,
                     message_id   INTEGER UNIQUE NOT NULL,
                     article_json TEXT NOT NULL,
-                    created_at   TEXT NOT NULL
+                    created_at   TEXT NOT NULL,
+                    handled      INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_seen_at    ON seen_articles(seen_at);
                 CREATE INDEX IF NOT EXISTS idx_message_id ON pending_articles(message_id);
             """)
+            # Migrate existing table if handled column doesn't exist
+            try:
+                conn.execute("ALTER TABLE pending_articles ADD COLUMN handled INTEGER NOT NULL DEFAULT 0")
+            except Exception:
+                pass  # Column already exists
 
-    # ── Deduplication helpers ──────────────────────────────────────────────────
+    # ── Deduplication ─────────────────────────────────────────────────────────
 
     def _cutoff(self) -> str:
         return (datetime.utcnow() - timedelta(hours=DEDUP_WINDOW_HOURS)).isoformat()
@@ -62,25 +70,39 @@ class Database:
                 (url, title, datetime.utcnow().isoformat()),
             )
 
-    # ── Pending articles (awaiting Telegram decision) ─────────────────────────
+    # ── Pending articles ──────────────────────────────────────────────────────
 
     def save_pending(self, message_id: int, article: dict):
         with self._conn() as conn:
             conn.execute(
                 """INSERT OR REPLACE INTO pending_articles
-                   (message_id, article_json, created_at) VALUES (?, ?, ?)""",
+                   (message_id, article_json, created_at, handled) VALUES (?, ?, ?, 0)""",
                 (message_id, json.dumps(article), datetime.utcnow().isoformat()),
             )
 
     def get_pending(self, message_id: int) -> dict | None:
+        """Returns article if it exists and hasn't been handled yet."""
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT article_json FROM pending_articles WHERE message_id = ?",
+                "SELECT article_json, handled FROM pending_articles WHERE message_id = ?",
                 (message_id,),
             ).fetchone()
-            return json.loads(row["article_json"]) if row else None
+            if not row:
+                return None
+            if row["handled"]:
+                return None
+            return json.loads(row["article_json"])
+
+    def mark_handled(self, message_id: int):
+        """Mark as handled without deleting — keeps history."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE pending_articles SET handled = 1 WHERE message_id = ?",
+                (message_id,),
+            )
 
     def delete_pending(self, message_id: int):
+        """Hard delete — kept for compatibility but prefer mark_handled."""
         with self._conn() as conn:
             conn.execute(
                 "DELETE FROM pending_articles WHERE message_id = ?",
@@ -90,8 +112,8 @@ class Database:
     # ── Maintenance ───────────────────────────────────────────────────────────
 
     def cleanup_old(self):
-        """Remove records older than 2x the dedup window."""
-        cutoff = (datetime.utcnow() - timedelta(hours=DEDUP_WINDOW_HOURS * 2)).isoformat()
+        seen_cutoff    = (datetime.utcnow() - timedelta(hours=DEDUP_WINDOW_HOURS * 2)).isoformat()
+        pending_cutoff = (datetime.utcnow() - timedelta(days=PENDING_RETENTION_DAYS)).isoformat()
         with self._conn() as conn:
-            conn.execute("DELETE FROM seen_articles    WHERE seen_at   < ?", (cutoff,))
-            conn.execute("DELETE FROM pending_articles WHERE created_at < ?", (cutoff,))
+            conn.execute("DELETE FROM seen_articles    WHERE seen_at    < ?", (seen_cutoff,))
+            conn.execute("DELETE FROM pending_articles WHERE created_at < ?", (pending_cutoff,))

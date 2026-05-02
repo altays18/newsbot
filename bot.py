@@ -81,7 +81,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("⚠️ This article was already handled.")
         return
 
-    db.delete_pending(message_id)
+    db.mark_handled(message_id)
     await query.edit_message_reply_markup(reply_markup=None)
 
     if action in ("post", "post_url"):
