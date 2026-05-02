@@ -9,24 +9,20 @@ from config import TELEGRAM_GROUP_ID
 from database import Database
 from deduplicator import Deduplicator
 from news_client import MarketauxClient
-from x_poster import post_article
+from x_poster import XPoster
 
 logger = logging.getLogger(__name__)
 
-# Instantiated once at module level — shared across all calls
 news_client = MarketauxClient()
+x_poster    = XPoster()
 
-
-
-# ── Message formatting ────────────────────────────────────────────────────────
 
 def _build_message(article: dict) -> str:
-    """Render an article as an HTML Telegram message."""
     title       = html.escape(article["title"])
     description = html.escape(article.get("description", ""))
     url         = article["url"]
     source      = html.escape(article.get("source", ""))
-    published   = article.get("published_at", "")[:10]   # YYYY-MM-DD
+    published   = article.get("published_at", "")[:10]
 
     lines = [f"📰 <b>{title}</b>", ""]
 
@@ -46,15 +42,13 @@ def _build_message(article: dict) -> str:
 
 def _approval_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Post to X", callback_data="post"),
-        InlineKeyboardButton("❌ Skip",       callback_data="skip"),
+        InlineKeyboardButton("✅ Post",       callback_data="post"),
+        InlineKeyboardButton("🔗 Post + URL", callback_data="post_url"),
+        InlineKeyboardButton("❌ Skip",        callback_data="skip"),
     ]])
 
 
-# ── Send to group ─────────────────────────────────────────────────────────────
-
 async def send_article_to_group(bot, article: dict, db: Database) -> int | None:
-    """Send one article to the Telegram group. Returns Telegram message_id."""
     try:
         msg = await bot.send_message(
             chat_id=TELEGRAM_GROUP_ID,
@@ -66,43 +60,41 @@ async def send_article_to_group(bot, article: dict, db: Database) -> int | None:
         db.save_pending(msg.message_id, article)
         logger.info(f"Sent to Telegram [{msg.message_id}]: {article['title'][:60]}")
         return msg.message_id
-
     except Exception as e:
         logger.error(f"Failed to send article to Telegram: {e}")
         return None
 
 
-# ── Callback handler (button presses) ────────────────────────────────────────
-
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
+    query      = update.callback_query
     await query.answer()
 
-    db: Database  = context.bot_data["db"]
-    message_id    = query.message.message_id
-    action        = query.data                            # "post" or "skip"
-    user          = query.from_user.first_name or "Someone"
+    db         = context.bot_data["db"]
+    message_id = query.message.message_id
+    action     = query.data
+    user       = query.from_user.first_name or "Someone"
 
     article = db.get_pending(message_id)
 
     if not article:
-        # Already handled (e.g. someone else clicked first)
         await query.edit_message_reply_markup(reply_markup=None)
         await query.message.reply_text("⚠️ This article was already handled.")
         return
 
-    # Remove buttons immediately so nobody else can click
     db.delete_pending(message_id)
     await query.edit_message_reply_markup(reply_markup=None)
 
-    if action == "post":
-        await query.message.reply_text("⏳ Posting to X…")
-        success, result = await post_article(article)
+    if action in ("post", "post_url"):
+        include_url = action == "post_url"
+        label = "🔗 Post + URL" if include_url else "✅ Post"
+        await query.message.reply_text(f"⏳ Posting to X ({label})…")
+
+        success, result = x_poster.post(article, include_url=include_url)
 
         if success:
             await query.message.reply_text(
                 f"✅ Posted by <b>{html.escape(user)}</b>\n"
-                f'🔗 <a href="{result}">View on X</a>',
+                f'🐦 <a href="{result}">View on X</a>',
                 parse_mode=ParseMode.HTML,
             )
         else:
@@ -118,12 +110,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-# ── Scheduled news poll ───────────────────────────────────────────────────────
-
 async def poll_news(context: ContextTypes.DEFAULT_TYPE):
-    """Fetches new articles, deduplicates, and sends unique ones to Telegram."""
-    db: Database = context.job.data
-    dedup        = Deduplicator(db)
+    db    = context.job.data
+    dedup = Deduplicator(db)
 
     logger.info("Polling news…")
     articles = news_client.fetch_articles()
@@ -145,7 +134,6 @@ async def poll_news(context: ContextTypes.DEFAULT_TYPE):
             skip_count += 1
             continue
 
-        # Mark as seen before sending to prevent duplicates on concurrent polls
         db.mark_seen(url, title)
         await send_article_to_group(context.bot, article, db)
         new_count += 1
