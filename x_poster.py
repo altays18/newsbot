@@ -44,28 +44,6 @@ async def _load_cookies(context) -> bool:
         return False
 
 
-async def _type_into_first_input(page, text: str):
-    """Find whatever input is visible and type into it."""
-    # Try multiple selectors in order
-    selectors = [
-        'input[autocomplete="username"]',
-        'input[name="text"]',
-        'input[data-testid="ocfEnterTextTextInput"]',
-        'input[type="text"]',
-    ]
-    for sel in selectors:
-        try:
-            el = page.locator(sel).first
-            if await el.count() > 0:
-                await el.wait_for(state="visible", timeout=5000)
-                await el.fill(text)
-                logger.info(f"Filled input using selector: {sel}")
-                return True
-        except Exception:
-            continue
-    return False
-
-
 async def _login(page) -> bool:
     try:
         logger.info("Navigating to X login...")
@@ -74,42 +52,54 @@ async def _login(page) -> bool:
         logger.info(f"URL: {page.url}")
 
         # Step 1 — username
-        filled = await _type_into_first_input(page, X_USERNAME)
-        if not filled:
-            logger.error("Could not find username input")
-            return False
+        username_input = page.locator('input[autocomplete="username"], input[name="text"]').first
+        await username_input.wait_for(state="visible", timeout=10000)
+        await username_input.fill(X_USERNAME)
         await page.keyboard.press("Enter")
         await page.wait_for_timeout(3000)
         logger.info("Username submitted")
 
-        # Step 2 — possible email/phone verification
-        try:
+        # Step 2 — X sometimes asks for email/phone before password
+        # Check all visible inputs and handle accordingly
+        for attempt in range(3):
+            await page.wait_for_timeout(2000)
+            logger.info(f"Checking what's on screen (attempt {attempt+1})...")
+
+            # Password field — we're done with pre-steps
+            pwd = page.locator('input[name="password"]')
+            if await pwd.count() > 0 and await pwd.is_visible():
+                logger.info("Password field found!")
+                await pwd.fill(X_PASSWORD)
+                await page.keyboard.press("Enter")
+                await page.wait_for_timeout(5000)
+                logger.info(f"Password submitted, URL: {page.url}")
+                break
+
+            # Verification / unusual activity screen
             verify = page.locator('input[data-testid="ocfEnterTextTextInput"]')
-            if await verify.count() > 0:
-                logger.info("Verification step detected, entering email")
+            if await verify.count() > 0 and await verify.is_visible():
+                logger.info("Verification input detected, entering email...")
                 await verify.fill(X_EMAIL or X_USERNAME)
                 await page.keyboard.press("Enter")
                 await page.wait_for_timeout(3000)
-        except Exception:
-            pass
+                continue
 
-        # Step 3 — password
-        try:
-            pwd = page.locator('input[name="password"]')
-            await pwd.wait_for(state="visible", timeout=10000)
-            await pwd.fill(X_PASSWORD)
-            await page.keyboard.press("Enter")
-            await page.wait_for_timeout(5000)
-            logger.info(f"Password submitted, URL: {page.url}")
-        except Exception as e:
-            logger.error(f"Password step failed: {e}")
-            return False
+            # Generic text input (fallback)
+            generic = page.locator('input[name="text"]')
+            if await generic.count() > 0 and await generic.is_visible():
+                logger.info("Generic text input found, entering email...")
+                await generic.fill(X_EMAIL or X_USERNAME)
+                await page.keyboard.press("Enter")
+                await page.wait_for_timeout(3000)
+                continue
+
+            logger.info("No known input found, waiting...")
 
         if "home" in page.url:
             logger.info("Login successful!")
             return True
 
-        logger.error(f"Login failed, URL: {page.url}")
+        logger.error(f"Login failed, final URL: {page.url}")
         return False
 
     except Exception as e:
