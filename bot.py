@@ -8,12 +8,12 @@ from telegram.ext import ContextTypes
 from config import TELEGRAM_GROUP_ID
 from database import Database
 from deduplicator import Deduplicator
-from news_client import MarketauxClient
+from news_client import FibNewsClient
 from x_poster import XPoster
 
 logger = logging.getLogger(__name__)
 
-news_client = MarketauxClient()
+news_client = FibNewsClient()
 x_poster    = XPoster()
 
 

@@ -1,47 +1,41 @@
 import requests
 import logging
 import os
-from config import NEWS_API_KEY, NEWS_API_URL, NEWS_PAGE_SIZE
 
 logger = logging.getLogger(__name__)
 
+FIBNEWS_API_URL  = os.getenv("FIBNEWS_API_URL", "https://fibnews-backend-production.up.railway.app")
+FIBNEWS_REGION   = os.getenv("FIBNEWS_REGION", "")   # Optional: us, europe, asia or blank for all
+NEWS_PAGE_SIZE   = int(os.getenv("NEWS_PAGE_SIZE", "20"))
 
-# ── Base class ────────────────────────────────────────────────────────────────
 
 class NewsClient:
-    """
-    Base class. Every client must return a list of article dicts with these keys:
-        title        (str, required)
-        url          (str, required)
-        description  (str, optional)
-        published_at (str, optional — ISO 8601 or any date string)
-        source       (str, optional)
-    """
     def fetch_articles(self) -> list[dict]:
         raise NotImplementedError
 
 
-# ── Marketaux ─────────────────────────────────────────────────────────────────
-
-class MarketauxClient(NewsClient):
-    """Client for api.marketaux.com — free tier: 100 req/day"""
+class FibNewsClient(NewsClient):
+    """Pulls articles from the fibnews backend."""
 
     def fetch_articles(self) -> list[dict]:
         try:
+            params = {"limit": NEWS_PAGE_SIZE}
+            if FIBNEWS_REGION:
+                params["region"] = FIBNEWS_REGION
+
             resp = requests.get(
-                NEWS_API_URL,
-                params={
-                    "api_token": NEWS_API_KEY,
-                    "language":  os.getenv("NEWS_LANGUAGE", "en"),
-                    "limit":     NEWS_PAGE_SIZE,
-                },
+                f"{FIBNEWS_API_URL}/api/news",
+                params=params,
                 timeout=10,
             )
             resp.raise_for_status()
             data = resp.json()
 
+            # Backend returns either a list or {"articles": [...]}
+            items = data if isinstance(data, list) else data.get("articles", data.get("data", []))
+
             articles = []
-            for item in data.get("data", []):
+            for item in items:
                 if not item.get("title") or not item.get("url"):
                     continue
                 articles.append({
@@ -50,11 +44,13 @@ class MarketauxClient(NewsClient):
                     "url":          item["url"],
                     "published_at": item.get("published_at", ""),
                     "source":       item.get("source", ""),
+                    "category":     item.get("category", ""),
+                    "region":       item.get("region", ""),
                 })
 
-            logger.info(f"Fetched {len(articles)} articles from Marketaux")
+            logger.info(f"Fetched {len(articles)} articles from FibNews backend")
             return articles
 
         except Exception as e:
-            logger.error(f"Marketaux fetch failed: {e}")
+            logger.error(f"FibNews fetch failed: {e}")
             return []
